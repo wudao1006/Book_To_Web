@@ -1,0 +1,45 @@
+name: BTW CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: btw/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix btw/frontend
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./btw[dev]
+
+      - name: Run unit tests
+        run: PYTHONPATH=${GITHUB_WORKSPACE} pytest btw/tests -m unit -q
+
+      - name: Run integration tests
+        run: PYTHONPATH=${GITHUB_WORKSPACE} pytest btw/tests -m integration -q
+
+      - name: Run e2e smoke tests
+        run: PYTHONPATH=${GITHUB_WORKSPACE} pytest btw/tests -m e2e_smoke -q
+
+      - name: Build frontend
+        run: npm run build --prefix btw/frontend

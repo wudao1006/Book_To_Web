@@ -42,3 +42,25 @@ async def test_api_smoke_upload_generate_and_fetch_component(tmp_path) -> None:
         component_payload = component.json()
         assert component_payload["type"] == "js"
         assert "module.exports" in component_payload["code"]
+
+
+@pytest.mark.asyncio
+async def test_api_skills_lists_registered_skills(tmp_path) -> None:
+    db.DB_PATH = tmp_path / "data" / "btw.db"
+    book_store.DATA_DIR = tmp_path / "data" / "books"
+
+    from btw.main import create_app
+
+    transport = httpx.ASGITransport(app=create_app())
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        response = await client.get("/api/skills")
+
+    assert response.status_code == 200
+    payload = response.json()
+    skills = payload["skills"]
+    assert isinstance(skills, list)
+    assert any(skill["name"] == "llm_call" for skill in skills)
+    assert any(skill["name"] == "code_validate" for skill in skills)
+    assert any(skill["name"] == "code_compile" for skill in skills)

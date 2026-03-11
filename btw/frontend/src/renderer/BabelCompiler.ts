@@ -1,5 +1,5 @@
 // @ts-expect-error Babel standalone does not ship useful TS types for this setup.
-import Babel from "@babel/standalone";
+import * as Babel from "@babel/standalone";
 
 type BabelResult = {
   code?: string;

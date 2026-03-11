@@ -88,12 +88,5 @@ class CreatorAgent(Agent):
         return stripped
 
     def _extract_dependencies(self, jsx_code: str) -> list[str]:
-        deps = ["react"]
-        lowered = jsx_code.lower()
-        if "echarts" in lowered:
-            deps.extend(["echarts", "echarts-for-react"])
-        if "katex" in lowered:
-            deps.append("katex")
-        if "framer-motion" in lowered or "motion." in lowered:
-            deps.append("framer-motion")
-        return deps
+        del jsx_code
+        return ["react"]

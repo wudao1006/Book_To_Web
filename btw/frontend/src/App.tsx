@@ -35,6 +35,7 @@ function App() {
   const [bookId, setBookId] = useState("");
   const [chapterIndex, setChapterIndex] = useState(0);
   const [useApi, setUseApi] = useState(false);
+  const [allowUnsafeExecution, setAllowUnsafeExecution] = useState(false);
 
   return (
     <div className="min-h-screen text-ink">
@@ -83,6 +84,15 @@ function App() {
                     type="checkbox"
                   />
                 </label>
+                <label className="flex items-center justify-between rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-slate-700">
+                  <span>Allow unsafe code execution</span>
+                  <input
+                    checked={allowUnsafeExecution}
+                    className="h-4 w-4 accent-amber-700"
+                    onChange={(event) => setAllowUnsafeExecution(event.target.checked)}
+                    type="checkbox"
+                  />
+                </label>
                 <p className="text-sm leading-6 text-slate-600">
                   With API mode off, the page renders local JSX immediately. With it on, the
                   loader fetches `/api/books/:bookId/chapters/:chapterIndex/component`.
@@ -105,6 +115,7 @@ function App() {
           <section className="space-y-4">
             <p className="text-xs uppercase tracking-[0.3em] text-pine">Renderer preview</p>
             <DynamicComponent
+              allowUnsafeExecution={allowUnsafeExecution}
               bookId={useApi ? bookId : undefined}
               chapterIndex={chapterIndex}
               inlineCode={useApi ? undefined : sampleChapterCode}
