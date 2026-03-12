@@ -1,6 +1,7 @@
 import pytest
 
 from btw.agents.creator import CreatorAgent
+from btw.storage import db
 
 
 def test_creator_analyze_content_type():
@@ -29,3 +30,29 @@ async def test_creator_process_generates_component_code():
     assert result["component_type"] == "chart"
     assert "export default function" in result["jsx_code"]
     assert "react" in result["dependencies"]
+
+
+@pytest.mark.asyncio
+async def test_creator_reuses_prompt_cache(tmp_path):
+    db.DB_PATH = tmp_path / "data" / "btw.db"
+    db.init_db()
+    creator = CreatorAgent(config={})
+
+    first = await creator.process(
+        {
+            "book_id": "book-001",
+            "chapter_index": 2,
+            "content": "Supply and demand can be visualized with a chart.",
+        }
+    )
+    second = await creator.process(
+        {
+            "book_id": "book-001",
+            "chapter_index": 2,
+            "content": "Supply and demand can be visualized with a chart.",
+        }
+    )
+
+    assert first["jsx_code"] == second["jsx_code"]
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is True

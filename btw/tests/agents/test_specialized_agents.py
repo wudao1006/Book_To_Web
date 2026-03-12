@@ -15,7 +15,6 @@ from btw.agents.base import AgentContext
         ("planner", "planning"),
         ("stylist", "style"),
         ("illustrator", "art"),
-        ("critic", "review"),
         ("translator", "adaptation"),
         ("conductor", "orchestration"),
         ("companion", "guidance"),
@@ -35,3 +34,21 @@ async def test_specialized_agents_expose_capability(
     assert result["agent"] == agent_name
     assert result["status"] == "placeholder"
     assert result["capability"] == capability
+
+
+@pytest.mark.asyncio
+async def test_critic_agent_reviews_generated_component() -> None:
+    critic = get_registry().create("critic")
+    critic.set_context(AgentContext(task_id="task-critic", book_id="book-001"))
+
+    result = await critic.process(
+        {
+            "component_type": "narrative",
+            "jsx_code": "export default function Demo(){ return <div>draft</div>; }",
+        }
+    )
+
+    assert result["agent"] == "critic"
+    assert result["approved"] is False
+    assert result["issues"]
+    assert "repair_prompt" in result

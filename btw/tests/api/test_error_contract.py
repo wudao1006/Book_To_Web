@@ -93,3 +93,26 @@ async def test_internal_errors_are_sanitized(monkeypatch, tmp_path) -> None:
     assert payload["message"] == "Internal server error"
     assert payload["trace_id"] == "trace-secret"
     assert "secret-internal-details" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_task_not_found_uses_contract(tmp_path) -> None:
+    db.DB_PATH = tmp_path / "data" / "btw.db"
+    book_store.DATA_DIR = tmp_path / "data" / "books"
+    from btw.main import create_app
+
+    transport = httpx.ASGITransport(app=create_app(), raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            "/api/tasks/not-exist",
+            headers={"x-trace-id": "trace-task-not-found"},
+        )
+
+    assert response.status_code == 404
+    payload = response.json()
+    _assert_error_contract(payload)
+    assert payload["code"] == "task_not_found"
+    assert payload["stage"] == "dispatch"
+    assert payload["trace_id"] == "trace-task-not-found"

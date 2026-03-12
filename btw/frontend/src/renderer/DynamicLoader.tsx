@@ -11,11 +11,25 @@ type ApiErrorPayload = {
   stage: string;
   retriable: boolean;
   trace_id: string;
+  details?: Record<string, unknown>;
 };
 
 type ComponentPayload = {
   type: "js" | "jsx";
   code: string;
+  version?: {
+    version_num: number;
+    is_latest: boolean;
+    is_stable: boolean;
+  };
+};
+
+export type DynamicLoaderError = {
+  message: string;
+  retriable: boolean;
+  traceId?: string;
+  stage?: string;
+  code?: string;
 };
 
 type DynamicComponentProps = {
@@ -23,12 +37,8 @@ type DynamicComponentProps = {
   chapterIndex?: number;
   inlineCode?: string;
   allowUnsafeExecution?: boolean;
-};
-
-type LoaderError = {
-  message: string;
-  retriable: boolean;
-  traceId?: string;
+  version?: "latest" | "stable" | number;
+  onErrorChange?: (error: DynamicLoaderError | null) => void;
 };
 
 type SandboxMessage =
@@ -77,19 +87,23 @@ function FallbackCard({
   text,
   retriable = false,
   traceId,
+  stage,
+  code,
   onRetry
 }: {
   text: string;
   retriable?: boolean;
   traceId?: string;
+  stage?: string;
+  code?: string;
   onRetry?: () => void;
 }) {
   return (
     <div className={fallbackClassName}>
       <p>{text}</p>
-      {traceId ? (
-        <p className="mt-2 text-xs text-slate-500">trace_id: {traceId}</p>
-      ) : null}
+      {stage ? <p className="mt-2 text-xs text-slate-500">stage: {stage}</p> : null}
+      {code ? <p className="mt-1 text-xs text-slate-500">code: {code}</p> : null}
+      {traceId ? <p className="mt-1 text-xs text-slate-500">trace_id: {traceId}</p> : null}
       {retriable && onRetry ? (
         <button
           className="mt-4 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-white"
@@ -106,11 +120,27 @@ function FallbackCard({
 class RemoteComponentError extends Error {
   readonly retriable: boolean;
   readonly traceId?: string;
+  readonly stage?: string;
+  readonly code?: string;
 
-  constructor(message: string, retriable: boolean, traceId?: string) {
+  constructor({
+    message,
+    retriable,
+    traceId,
+    stage,
+    code
+  }: {
+    message: string;
+    retriable: boolean;
+    traceId?: string;
+    stage?: string;
+    code?: string;
+  }) {
     super(message);
     this.retriable = retriable;
     this.traceId = traceId;
+    this.stage = stage;
+    this.code = code;
   }
 }
 
@@ -140,8 +170,15 @@ function escapeInlineScript(source: string): string {
   return source.replace(/<\/script/gi, "<\\/script");
 }
 
-async function readRemoteComponent(bookId: string, chapterIndex: number): Promise<ComponentPayload> {
-  const response = await fetch(`/api/books/${bookId}/chapters/${chapterIndex}/component`);
+async function readRemoteComponent(
+  bookId: string,
+  chapterIndex: number,
+  version: "latest" | "stable" | number
+): Promise<ComponentPayload> {
+  const query = new URLSearchParams({ version: String(version) });
+  const response = await fetch(
+    `/api/books/${bookId}/chapters/${chapterIndex}/component?${query.toString()}`
+  );
 
   if (!response.ok) {
     const traceId = response.headers.get("x-trace-id") ?? undefined;
@@ -152,13 +189,31 @@ async function readRemoteComponent(bookId: string, chapterIndex: number): Promis
       body = null;
     }
     if (isApiErrorPayload(body)) {
-      throw new RemoteComponentError(body.message, body.retriable, body.trace_id || traceId);
+      throw new RemoteComponentError({
+        message: body.message,
+        retriable: body.retriable,
+        traceId: body.trace_id || traceId,
+        stage: body.stage,
+        code: body.code
+      });
     }
 
     if (response.status === 404) {
-      throw new RemoteComponentError("Component not generated yet.", true, traceId);
+      throw new RemoteComponentError({
+        message: "Component not generated yet.",
+        retriable: true,
+        traceId,
+        stage: "render",
+        code: "component_not_ready"
+      });
     }
-    throw new RemoteComponentError(`Failed to load component: ${response.status}`, true, traceId);
+    throw new RemoteComponentError({
+      message: `Failed to load component: ${response.status}`,
+      retriable: true,
+      traceId,
+      stage: "render",
+      code: "component_load_failed"
+    });
   }
 
   return (await response.json()) as ComponentPayload;
@@ -168,8 +223,7 @@ async function instantiateComponent(
   sourceCode: string,
   sourceType: ComponentPayload["type"]
 ): Promise<ComponentType> {
-  const compiledCode =
-    sourceType === "js" ? sourceCode : await compileJSX(sourceCode);
+  const compiledCode = sourceType === "js" ? sourceCode : await compileJSX(sourceCode);
   const exportsObject: { default?: ComponentType } = {};
   const moduleObject = { exports: exportsObject };
   const factory = new Function(
@@ -266,19 +320,27 @@ function buildSandboxDocument(frameId: string, compiledCode: string): string {
 function SandboxedRemoteComponent({
   bookId,
   chapterIndex,
-  allowUnsafeExecution
+  allowUnsafeExecution,
+  version,
+  onErrorChange
 }: {
   bookId: string;
   chapterIndex: number;
   allowUnsafeExecution: boolean;
+  version: "latest" | "stable" | number;
+  onErrorChange?: (error: DynamicLoaderError | null) => void;
 }) {
   const [frameMarkup, setFrameMarkup] = useState<string | null>(null);
-  const [error, setError] = useState<LoaderError | null>(null);
+  const [error, setError] = useState<DynamicLoaderError | null>(null);
   const [loading, setLoading] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [frameHeight, setFrameHeight] = useState(320);
-  const frameId = `btw-frame-${bookId}-${chapterIndex}-${reloadNonce}`;
+  const frameId = `btw-frame-${bookId}-${chapterIndex}-${version}-${reloadNonce}`;
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+
+  useEffect(() => {
+    onErrorChange?.(error);
+  }, [error, onErrorChange]);
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
@@ -297,7 +359,9 @@ function SandboxedRemoteComponent({
       if (event.data.type === "btw-sandbox-error") {
         setError({
           message: `Sandbox render failed: ${event.data.message}`,
-          retriable: false
+          retriable: false,
+          stage: "render",
+          code: "sandbox_render_failed"
         });
         setLoading(false);
       }
@@ -319,15 +383,17 @@ function SandboxedRemoteComponent({
 
       try {
         if (!allowUnsafeExecution) {
-          throw new RemoteComponentError(
-            "Remote generated code execution is blocked by policy. Enable unsafe execution to continue.",
-            false
-          );
+          throw new RemoteComponentError({
+            message:
+              "Remote generated code execution is blocked by policy. Enable unsafe execution to continue.",
+            retriable: false,
+            stage: "render",
+            code: "unsafe_execution_blocked"
+          });
         }
 
-        const payload = await readRemoteComponent(bookId, chapterIndex);
-        const compiledCode =
-          payload.type === "js" ? payload.code : await compileJSX(payload.code);
+        const payload = await readRemoteComponent(bookId, chapterIndex, version);
+        const compiledCode = payload.type === "js" ? payload.code : await compileJSX(payload.code);
 
         if (!disposed) {
           setFrameMarkup(buildSandboxDocument(frameId, compiledCode));
@@ -336,12 +402,14 @@ function SandboxedRemoteComponent({
       } catch (loadError) {
         const fallbackMessage =
           loadError instanceof Error ? loadError.message : "Unknown component loading error";
-        const resolvedError =
+        const resolvedError: DynamicLoaderError =
           loadError instanceof RemoteComponentError
             ? {
                 message: loadError.message,
                 retriable: loadError.retriable,
-                traceId: loadError.traceId
+                traceId: loadError.traceId,
+                stage: loadError.stage,
+                code: loadError.code
               }
             : { message: fallbackMessage, retriable: false };
 
@@ -361,7 +429,7 @@ function SandboxedRemoteComponent({
     return () => {
       disposed = true;
     };
-  }, [allowUnsafeExecution, bookId, chapterIndex, frameId]);
+  }, [allowUnsafeExecution, bookId, chapterIndex, frameId, version]);
 
   if (loading) {
     return <FallbackCard text="Loading interactive component..." />;
@@ -370,8 +438,10 @@ function SandboxedRemoteComponent({
   if (error) {
     return (
       <FallbackCard
+        code={error.code}
         onRetry={error.retriable ? () => setReloadNonce((value) => value + 1) : undefined}
         retriable={error.retriable}
+        stage={error.stage}
         text={error.message}
         traceId={error.traceId}
       />
@@ -398,7 +468,9 @@ export function DynamicComponent({
   bookId,
   chapterIndex = 0,
   inlineCode,
-  allowUnsafeExecution = false
+  allowUnsafeExecution = false,
+  version = "latest",
+  onErrorChange
 }: DynamicComponentProps) {
   if (bookId && inlineCode == null) {
     return (
@@ -406,18 +478,30 @@ export function DynamicComponent({
         allowUnsafeExecution={allowUnsafeExecution}
         bookId={bookId}
         chapterIndex={chapterIndex}
+        onErrorChange={onErrorChange}
+        version={version}
       />
     );
   }
 
-  return <LocalDynamicComponent inlineCode={inlineCode} />;
+  return <LocalDynamicComponent inlineCode={inlineCode} onErrorChange={onErrorChange} />;
 }
 
-function LocalDynamicComponent({ inlineCode }: { inlineCode?: string }) {
+function LocalDynamicComponent({
+  inlineCode,
+  onErrorChange
+}: {
+  inlineCode?: string;
+  onErrorChange?: (error: DynamicLoaderError | null) => void;
+}) {
   const [component, setComponent] = useState<ComponentType | null>(null);
-  const [error, setError] = useState<LoaderError | null>(null);
+  const [error, setError] = useState<DynamicLoaderError | null>(null);
   const [loading, setLoading] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
+
+  useEffect(() => {
+    onErrorChange?.(error);
+  }, [error, onErrorChange]);
 
   useEffect(() => {
     let disposed = false;

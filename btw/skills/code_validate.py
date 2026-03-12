@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import asyncio
 import json
 import subprocess
 import tempfile
@@ -33,7 +31,7 @@ class CodeValidateSkill(Skill):
             for pattern in self.DANGEROUS_PATTERNS
             if pattern in code
         ]
-        ast_result = await asyncio.to_thread(self._ast_issues, code)
+        ast_result = self._ast_issues(code)
         ast_issues = ast_result["issues"]
         warnings = ast_result["warnings"]
         issues = list(dict.fromkeys(raw_issues + ast_issues))

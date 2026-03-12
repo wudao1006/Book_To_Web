@@ -27,15 +27,42 @@ async def test_api_smoke_upload_generate_and_fetch_component(tmp_path) -> None:
         assert upload.status_code == 200
         payload = upload.json()
         assert payload["status"] == "completed"
+        assert payload["task_id"]
+        upload_task_id = payload["task_id"]
 
         book_id = payload["book_id"]
+        upload_task = await client.get(f"/api/tasks/{upload_task_id}")
+        assert upload_task.status_code == 200
+        assert upload_task.json()["status"] == "succeeded"
+
+        upload_steps = await client.get(f"/api/tasks/{upload_task_id}/steps")
+        assert upload_steps.status_code == 200
+        assert [step["stage"] for step in upload_steps.json()["steps"]] == ["parse", "read"]
+        assert all(step["status"] == "succeeded" for step in upload_steps.json()["steps"])
+
         chapters = await client.get(f"/api/books/{book_id}/chapters")
         assert chapters.status_code == 200
         assert len(chapters.json()["chapters"]) == 1
 
         generate = await client.post(f"/api/books/{book_id}/chapters/0/generate")
         assert generate.status_code == 200
-        assert generate.json()["success"] is True
+        generate_payload = generate.json()
+        assert generate_payload["success"] is True
+
+        generate_task_id = generate_payload["task_id"]
+        generate_task = await client.get(f"/api/tasks/{generate_task_id}")
+        assert generate_task.status_code == 200
+        assert generate_task.json()["status"] == "succeeded"
+
+        generate_steps = await client.get(f"/api/tasks/{generate_task_id}/steps")
+        assert generate_steps.status_code == 200
+        assert [step["stage"] for step in generate_steps.json()["steps"]] == [
+            "create",
+            "critic",
+            "validate",
+            "compile",
+        ]
+        assert all(step["status"] == "succeeded" for step in generate_steps.json()["steps"])
 
         component = await client.get(f"/api/books/{book_id}/chapters/0/component")
         assert component.status_code == 200

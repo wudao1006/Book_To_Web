@@ -1,0 +1,3 @@
+Render a formula-focused component.
+Display formula context clearly and provide explanatory text.
+Avoid unsafe globals and return one default export.

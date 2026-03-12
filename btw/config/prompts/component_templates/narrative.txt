@@ -1,0 +1,3 @@
+Render a narrative-focused component.
+Use semantic container tags such as <article> or <section>.
+Include a small interaction state that helps reading comprehension.

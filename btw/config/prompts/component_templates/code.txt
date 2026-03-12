@@ -1,0 +1,3 @@
+Render a code-learning component.
+Use <pre> or <code> blocks and clear labels.
+Add one lightweight interactive control for step-by-step reading.

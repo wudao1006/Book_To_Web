@@ -19,15 +19,19 @@ class ParserAgent(Agent):
         text = file_path.read_text(encoding="utf-8")
 
         chapters = self._split_chapters(text)
+        chapter_rows: list[dict[str, Any]] = []
         for chapter in chapters:
             content_path = save_chapter(book_id, chapter["index"], chapter["content"])
-            ChapterRepository.upsert_chapter(
-                chapter_id=f"{book_id}-ch-{chapter['index']:02d}",
-                book_id=book_id,
-                index_num=chapter["index"],
-                title=chapter["title"],
-                content_path=str(content_path),
+            chapter_rows.append(
+                {
+                    "id": f"{book_id}-ch-{chapter['index']:02d}",
+                    "index_num": chapter["index"],
+                    "title": chapter["title"],
+                    "content_path": str(content_path),
+                }
             )
+
+        ChapterRepository.bulk_upsert_chapters(book_id=book_id, chapters=chapter_rows)
 
         BookRepository.update_status(book_id, "parsed")
         return {
