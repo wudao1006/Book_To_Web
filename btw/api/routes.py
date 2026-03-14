@@ -1,30 +1,23 @@
 from __future__ import annotations
 
 import os
-import shutil
-import uuid
 
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 
-from btw.agents import get_registry
 from btw.core.errors import BTWError, ensure_error_payload
-from btw.core.limits import RequestLimiter
+from btw.core.limits import RateLimitExceeded, RequestLimiter
+from btw.services import BookApplicationService
 from btw.skills.base import get_skill_registry
-from btw.storage import book_store
-from btw.storage.db import (
-    AgentLogRepository,
-    BookRepository,
-    ChapterRepository,
-    ComponentVersionRepository,
-    MetricsRepository,
-    TaskRepository,
-)
 
 router = APIRouter()
+_book_service = BookApplicationService()
 
 _request_limiter = RequestLimiter(
     per_user_limit=int(os.getenv("BTW_MAX_CONCURRENT_PER_USER", "2")),
     per_task_limit=int(os.getenv("BTW_MAX_CONCURRENT_PER_TASK", "2")),
+    acquire_timeout_ms=int(os.getenv("BTW_QUEUE_TIMEOUT_MS", "5000")),
+    max_tracked_keys=int(os.getenv("BTW_LIMITER_MAX_KEYS", "4096")),
+    idle_ttl_seconds=int(os.getenv("BTW_LIMITER_IDLE_TTL_SECONDS", "300")),
 )
 
 
@@ -40,31 +33,34 @@ async def upload_book(
     author: str | None = Form(default=None),
 ) -> dict[str, object]:
     trace_id = request.state.trace_id
-    book_id = str(uuid.uuid4())[:8]
-    upload_dir = book_store.DATA_DIR.parent / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    file_path = upload_dir / f"{book_id}_{file.filename}"
-
-    with file_path.open("wb") as handle:
-        shutil.copyfileobj(file.file, handle)
-
-    BookRepository.create_book(
-        book_id=book_id,
+    upload_record = _book_service.create_upload_record(
+        file_obj=file.file,
+        filename=file.filename,
         title=title,
         author=author,
-        file_path=str(file_path),
     )
+    book_id = str(upload_record["book_id"])
+    file_path = str(upload_record["file_path"])
 
-    director = get_registry().create("director")
-    async with _request_limiter.slot(user_id=_user_id(request), task_key="upload_book") as slot:
-        result = await director.process(
-            {
-                "action": "upload_book",
-                "book_id": book_id,
-                "file_path": str(file_path),
-                "trace_id": trace_id,
-            }
-        )
+    try:
+        async with _request_limiter.slot(
+            user_id=_user_id(request), task_key="upload_book"
+        ) as slot:
+            result = await _book_service.dispatch_upload(
+                book_id=book_id,
+                file_path=file_path,
+                trace_id=trace_id,
+            )
+    except RateLimitExceeded as exc:
+        raise BTWError(
+            code="rate_limited",
+            message=str(exc),
+            stage="upload",
+            retriable=True,
+            status_code=429,
+            trace_id=trace_id,
+        ) from exc
+
     if result.get("error"):
         payload = ensure_error_payload(
             result["error"],
@@ -93,9 +89,15 @@ async def upload_book(
     }
 
 
+@router.get("/books")
+async def list_books(request: Request) -> dict[str, object]:
+    del request
+    return {"books": _book_service.list_books()}
+
+
 @router.get("/books/{book_id}")
 async def get_book(request: Request, book_id: str) -> dict[str, object]:
-    book = BookRepository.get_book(book_id)
+    book = _book_service.get_book(book_id)
     if book is None:
         raise BTWError(
             code="book_not_found",
@@ -111,7 +113,24 @@ async def get_book(request: Request, book_id: str) -> dict[str, object]:
 @router.get("/books/{book_id}/chapters")
 async def get_chapters(request: Request, book_id: str) -> dict[str, object]:
     del request
-    return {"chapters": ChapterRepository.list_by_book(book_id)}
+    return {"chapters": _book_service.list_chapters(book_id)}
+
+
+@router.get("/books/{book_id}/chapters/{chapter_index}/content")
+async def get_chapter_content(
+    request: Request, book_id: str, chapter_index: int
+) -> dict[str, object]:
+    payload = _book_service.get_chapter_content(book_id, chapter_index)
+    if payload is None:
+        raise BTWError(
+            code="chapter_not_found",
+            message="Chapter not found",
+            stage="read",
+            retriable=False,
+            status_code=404,
+            trace_id=request.state.trace_id,
+        )
+    return payload
 
 
 @router.get("/books/{book_id}/chapters/{chapter_index}/versions")
@@ -119,16 +138,7 @@ async def list_component_versions(
     request: Request, book_id: str, chapter_index: int
 ) -> dict[str, object]:
     del request
-    versions = ComponentVersionRepository.list_versions(book_id, chapter_index)
-    latest = next((item for item in versions if item["is_latest"]), None)
-    stable = next((item for item in versions if item["is_stable"]), None)
-    return {
-        "book_id": book_id,
-        "chapter_index": chapter_index,
-        "latest": latest,
-        "stable": stable,
-        "versions": versions,
-    }
+    return _book_service.list_component_versions(book_id, chapter_index)
 
 
 @router.post("/books/{book_id}/chapters/{chapter_index}/rollback")
@@ -136,8 +146,8 @@ async def rollback_component_version(
     request: Request, book_id: str, chapter_index: int
 ) -> dict[str, object]:
     trace_id = request.state.trace_id
-    restored = ComponentVersionRepository.rollback_to_stable(book_id, chapter_index)
-    if restored is None:
+    payload = _book_service.rollback_component_version(book_id, chapter_index)
+    if payload is None:
         raise BTWError(
             code="stable_version_not_found",
             message="Stable version not found",
@@ -146,17 +156,7 @@ async def rollback_component_version(
             status_code=404,
             trace_id=trace_id,
         )
-
-    versions = ComponentVersionRepository.list_versions(book_id, chapter_index)
-    latest = next((item for item in versions if item["is_latest"]), None)
-    stable = next((item for item in versions if item["is_stable"]), None)
-    return {
-        "book_id": book_id,
-        "chapter_index": chapter_index,
-        "latest": latest,
-        "stable": stable,
-        "versions": versions,
-    }
+    return payload
 
 
 @router.get("/skills")
@@ -178,12 +178,12 @@ async def list_skills(request: Request) -> dict[str, object]:
 @router.get("/metrics/tasks")
 async def get_task_metrics(request: Request) -> dict[str, object]:
     del request
-    return MetricsRepository.task_metrics()
+    return _book_service.task_metrics()
 
 
 @router.get("/tasks/{task_id}")
 async def get_task(request: Request, task_id: str) -> dict[str, object]:
-    task = TaskRepository.get_task(task_id)
+    task = _book_service.get_task(task_id)
     if task is None:
         raise BTWError(
             code="task_not_found",
@@ -198,7 +198,7 @@ async def get_task(request: Request, task_id: str) -> dict[str, object]:
 
 @router.get("/tasks/{task_id}/steps")
 async def get_task_steps(request: Request, task_id: str) -> dict[str, object]:
-    task = TaskRepository.get_task(task_id)
+    task = _book_service.get_task(task_id)
     if task is None:
         raise BTWError(
             code="task_not_found",
@@ -209,12 +209,12 @@ async def get_task_steps(request: Request, task_id: str) -> dict[str, object]:
             trace_id=request.state.trace_id,
         )
     del request
-    return {"task_id": task_id, "steps": TaskRepository.list_steps(task_id)}
+    return {"task_id": task_id, "steps": _book_service.get_task_steps(task_id)}
 
 
 @router.get("/tasks/{task_id}/logs")
 async def get_task_logs(request: Request, task_id: str) -> dict[str, object]:
-    task = TaskRepository.get_task(task_id)
+    task = _book_service.get_task(task_id)
     if task is None:
         raise BTWError(
             code="task_not_found",
@@ -225,7 +225,7 @@ async def get_task_logs(request: Request, task_id: str) -> dict[str, object]:
             trace_id=request.state.trace_id,
         )
     del request
-    return {"task_id": task_id, "logs": AgentLogRepository.list_by_task(task_id)}
+    return {"task_id": task_id, "logs": _book_service.get_task_logs(task_id)}
 
 
 @router.post("/books/{book_id}/chapters/{chapter_index}/generate")
@@ -233,19 +233,25 @@ async def generate_component(
     request: Request, book_id: str, chapter_index: int
 ) -> dict[str, object]:
     trace_id = request.state.trace_id
-    director = get_registry().create("director")
 
-    async with _request_limiter.slot(
-        user_id=_user_id(request), task_key=f"generate_component:{book_id}:{chapter_index}"
-    ) as slot:
-        result = await director.process(
-            {
-                "action": "generate_component",
-                "book_id": book_id,
-                "chapter_index": chapter_index,
-                "trace_id": trace_id,
-            }
-        )
+    try:
+        async with _request_limiter.slot(
+            user_id=_user_id(request), task_key=f"generate_component:{book_id}:{chapter_index}"
+        ) as slot:
+            result = await _book_service.dispatch_generate(
+                book_id=book_id,
+                chapter_index=chapter_index,
+                trace_id=trace_id,
+            )
+    except RateLimitExceeded as exc:
+        raise BTWError(
+            code="rate_limited",
+            message=str(exc),
+            stage="generate",
+            retriable=True,
+            status_code=429,
+            trace_id=trace_id,
+        ) from exc
 
     if result.get("error"):
         payload = ensure_error_payload(
@@ -278,15 +284,11 @@ async def get_component(
     version: str = Query(default="latest", pattern="^(latest|stable|[0-9]+)$"),
 ) -> dict[str, object]:
     trace_id = request.state.trace_id
-    director = get_registry().create("director")
-    result = await director.process(
-        {
-            "action": "get_component",
-            "book_id": book_id,
-            "chapter_index": chapter_index,
-            "trace_id": trace_id,
-            "version": version,
-        }
+    result = await _book_service.dispatch_get_component(
+        book_id=book_id,
+        chapter_index=chapter_index,
+        trace_id=trace_id,
+        version=version,
     )
     if result.get("error"):
         payload = ensure_error_payload(

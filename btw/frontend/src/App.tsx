@@ -1,453 +1,341 @@
-import { useEffect, useMemo, useState } from "react";
-import { DynamicComponent, type DynamicLoaderError } from "./renderer/DynamicLoader";
+import { useEffect, useState, useCallback } from 'react';
+import { TopBar } from './components/TopBar';
+import { Drawer } from './components/Drawer';
+import { SidePanel } from './components/SidePanel';
+import { ContentView } from './components/ContentView';
 
-type TaskPayload = {
+// Types matching the backend API
+interface Book {
   id: string;
-  status: string;
-  error_code?: string | null;
-  error_message?: string | null;
-};
+  title: string;
+  author?: string;
+  status?: 'pending' | 'parsed' | 'ready';
+}
 
-type TaskStep = {
-  stage: string;
-  status: string;
-  error_code?: string | null;
-  error_message?: string | null;
-};
+interface Chapter {
+  index_num: number;
+  title: string;
+}
 
-type VersionInfo = {
+interface VersionInfo {
   version_num: number;
   is_latest: boolean;
   is_stable: boolean;
   bundle_size: number;
   created_at: string;
-};
+}
 
-type VersionsResponse = {
-  latest: VersionInfo | null;
-  stable: VersionInfo | null;
-  versions: VersionInfo[];
-};
+interface TaskStep {
+  stage: string;
+  status: string;
+  error_code?: string | null;
+  error_message?: string | null;
+}
 
-type ApiErrorPayload = {
+interface ApiError {
   code: string;
   message: string;
   stage: string;
   retriable: boolean;
   trace_id: string;
-};
-
-const sampleChapterCode = `
-export default function InlineNarrative() {
-  const [focus, setFocus] = React.useState("reader");
-
-  return (
-    <article className="rounded-3xl border border-emerald-200 bg-white p-6 shadow-panel">
-      <div className="flex flex-wrap items-center gap-3">
-        {["reader", "planner", "creator"].map((item) => (
-          <button
-            key={item}
-            className={
-              "rounded-full px-3 py-1 text-sm " +
-              (focus === item ? "bg-emerald-700 text-white" : "bg-emerald-100 text-emerald-900")
-            }
-            onClick={() => setFocus(item)}
-          >
-            {item}
-          </button>
-        ))}
-      </div>
-      <p className="mt-5 text-sm leading-7 text-slate-700">
-        Current focus: <span className="font-semibold text-slate-900">{focus}</span>. This preview
-        shows how a chapter can become a small interactive reading artifact before the backend is
-        online.
-      </p>
-    </article>
-  );
-}
-`;
-
-function isApiErrorPayload(payload: unknown): payload is ApiErrorPayload {
-  if (typeof payload !== "object" || payload === null) {
-    return false;
-  }
-  const record = payload as Record<string, unknown>;
-  return (
-    typeof record.code === "string" &&
-    typeof record.message === "string" &&
-    typeof record.stage === "string" &&
-    typeof record.retriable === "boolean" &&
-    typeof record.trace_id === "string"
-  );
 }
 
 function App() {
-  const [bookId, setBookId] = useState("");
-  const [chapterIndex, setChapterIndex] = useState(0);
-  const [useApi, setUseApi] = useState(false);
-  const [allowUnsafeExecution, setAllowUnsafeExecution] = useState(false);
+  // UI State
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
 
-  const [taskId, setTaskId] = useState<string | null>(null);
-  const [taskStatus, setTaskStatus] = useState<string>("idle");
-  const [taskSteps, setTaskSteps] = useState<TaskStep[]>([]);
-  const [taskMessage, setTaskMessage] = useState<string>("No active generation task.");
-
+  // Data State
+  const [books, setBooks] = useState<Book[]>([]);
+  const [currentBookId, setCurrentBookId] = useState<string | undefined>();
+  const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [currentChapterIndex, setCurrentChapterIndex] = useState<number>(0);
   const [versions, setVersions] = useState<VersionInfo[]>([]);
-  const [latestVersion, setLatestVersion] = useState<VersionInfo | null>(null);
-  const [stableVersion, setStableVersion] = useState<VersionInfo | null>(null);
-  const [versionMode, setVersionMode] = useState<"latest" | "stable">("latest");
+  const [currentChapterContent, setCurrentChapterContent] = useState<string | undefined>();
 
-  const [apiError, setApiError] = useState<string | null>(null);
-  const [loaderError, setLoaderError] = useState<DynamicLoaderError | null>(null);
+  // Settings
+  const [allowUnsafeExecution, setAllowUnsafeExecution] = useState(false);
+  const [versionMode, setVersionMode] = useState<'latest' | 'stable'>('latest');
+
+  // Generation State
   const [isGenerating, setIsGenerating] = useState(false);
-  const [rendererNonce, setRendererNonce] = useState(0);
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [taskSteps, setTaskSteps] = useState<TaskStep[]>([]);
+  const [taskStatus, setTaskStatus] = useState<string>('idle');
+  const [taskMessage, setTaskMessage] = useState<string>('');
 
-  const hasApiTarget = useApi && bookId.trim().length > 0;
+  const currentBook = books.find(b => b.id === currentBookId);
+  const currentChapter = chapters.find(c => c.index_num === currentChapterIndex);
 
-  const stageOrder = useMemo(
-    () => ["create", "critic", "validate", "compile", "render"],
-    []
-  );
+  // Load books list
+  useEffect(() => {
+    // In real implementation: fetch('/api/books')
+    // For now, we'll keep the UI functional even without backend data
+    setBooks([]);
+  }, []);
 
-  const stepMap = useMemo(() => {
-    const map = new Map<string, TaskStep>();
-    for (const step of taskSteps) {
-      map.set(step.stage, step);
-    }
-    return map;
-  }, [taskSteps]);
-
-  async function loadVersions(targetBookId: string, targetChapterIndex: number) {
-    const response = await fetch(
-      `/api/books/${targetBookId}/chapters/${targetChapterIndex}/versions`
-    );
-    if (!response.ok) {
-      setVersions([]);
-      setLatestVersion(null);
-      setStableVersion(null);
+  // Load chapters when book changes
+  useEffect(() => {
+    if (!currentBookId) {
+      setChapters([]);
+      setCurrentChapterIndex(0);
       return;
     }
-    const payload = (await response.json()) as VersionsResponse;
-    setVersions(payload.versions || []);
-    setLatestVersion(payload.latest || null);
-    setStableVersion(payload.stable || null);
-  }
 
-  async function loadTaskState(currentTaskId: string) {
-    const [taskResponse, stepsResponse] = await Promise.all([
-      fetch(`/api/tasks/${currentTaskId}`),
-      fetch(`/api/tasks/${currentTaskId}/steps`)
-    ]);
-
-    if (taskResponse.ok) {
-      const task = (await taskResponse.json()) as TaskPayload;
-      setTaskStatus(task.status);
-      if (task.status === "failed") {
-        setTaskMessage(task.error_message || task.error_code || "Task failed.");
-      } else if (task.status === "succeeded") {
-        setTaskMessage("Task completed.");
+    async function loadChapters() {
+      try {
+        const response = await fetch(`/api/books/${currentBookId}/chapters`);
+        if (!response.ok) throw new Error('Failed to load chapters');
+        const data = await response.json();
+        setChapters(data.chapters || []);
+        setCurrentChapterIndex(0);
+      } catch (err) {
+        console.error('Failed to load chapters:', err);
+        setChapters([]);
       }
     }
 
-    if (stepsResponse.ok) {
-      const payload = (await stepsResponse.json()) as { steps: TaskStep[] };
-      setTaskSteps(payload.steps || []);
-    }
-  }
+    loadChapters();
+  }, [currentBookId]);
 
-  async function handleGenerate() {
-    if (!hasApiTarget) {
-      setApiError("Book ID is required in API mode.");
+  // Load chapter content
+  useEffect(() => {
+    if (!currentBookId || !currentChapter) {
+      setCurrentChapterContent(undefined);
       return;
     }
+    const chapterIndex = currentChapter.index_num;
 
-    setApiError(null);
-    setTaskMessage("Generation started.");
-    setIsGenerating(true);
-
-    try {
-      const response = await fetch(
-        `/api/books/${bookId}/chapters/${chapterIndex}/generate`,
-        {
-          method: "POST"
-        }
-      );
-
-      if (!response.ok) {
-        let payload: unknown = null;
-        try {
-          payload = await response.json();
-        } catch {
-          payload = null;
-        }
-        if (isApiErrorPayload(payload)) {
-          setApiError(
-            `${payload.message} (stage=${payload.stage}, retriable=${String(payload.retriable)})`
-          );
-          setTaskMessage(`Generation failed: ${payload.message}`);
+    async function loadContent() {
+      try {
+        const response = await fetch(
+          `/api/books/${currentBookId}/chapters/${chapterIndex}/content`
+        );
+        if (response.ok) {
+          const data = await response.json() as { content?: string };
+          setCurrentChapterContent(data.content);
           return;
         }
-        setApiError(`Generation failed with status ${response.status}`);
-        return;
+        setCurrentChapterContent(undefined);
+      } catch (err) {
+        console.error('Failed to load content:', err);
+        setCurrentChapterContent(undefined);
       }
-
-      const payload = (await response.json()) as { task_id: string; success: boolean };
-      setTaskId(payload.task_id);
-      setTaskStatus("running");
-      setTaskMessage("Generation task queued.");
-      await loadTaskState(payload.task_id);
-      await loadVersions(bookId, chapterIndex);
-      setRendererNonce((value) => value + 1);
-    } finally {
-      setIsGenerating(false);
-    }
-  }
-
-  async function handleRollback() {
-    if (!hasApiTarget) {
-      return;
     }
 
-    setApiError(null);
-    const response = await fetch(
-      `/api/books/${bookId}/chapters/${chapterIndex}/rollback`,
-      {
-        method: "POST"
-      }
-    );
+    loadContent();
+  }, [currentBookId, currentChapter]);
 
-    if (!response.ok) {
-      let payload: unknown = null;
-      try {
-        payload = await response.json();
-      } catch {
-        payload = null;
-      }
-      if (isApiErrorPayload(payload)) {
-        setApiError(payload.message);
-      } else {
-        setApiError(`Rollback failed with status ${response.status}`);
-      }
-      return;
-    }
-
-    setVersionMode("latest");
-    await loadVersions(bookId, chapterIndex);
-    setRendererNonce((value) => value + 1);
-    setTaskMessage("Rollback completed. Latest now points to stable.");
-  }
-
-  useEffect(() => {
-    if (!hasApiTarget) {
+  // Load versions
+  const loadVersions = useCallback(async (bookId: string, chapterIndex: number) => {
+    try {
+      const response = await fetch(`/api/books/${bookId}/chapters/${chapterIndex}/versions`);
+      if (!response.ok) throw new Error('Failed to load versions');
+      const data = await response.json();
+      setVersions(data.versions || []);
+    } catch (err) {
+      console.error('Failed to load versions:', err);
       setVersions([]);
-      setLatestVersion(null);
-      setStableVersion(null);
-      setTaskId(null);
-      setTaskStatus("idle");
-      setTaskSteps([]);
-      return;
     }
+  }, []);
 
-    void loadVersions(bookId, chapterIndex);
-  }, [hasApiTarget, bookId, chapterIndex]);
-
+  // Load versions when book/chapter changes
   useEffect(() => {
-    if (!taskId) {
-      return;
+    if (currentBookId) {
+      loadVersions(currentBookId, currentChapterIndex);
+    }
+  }, [currentBookId, currentChapterIndex, loadVersions]);
+
+  // Poll task status
+  useEffect(() => {
+    if (!taskId) return;
+
+    let cancelled = false;
+    const terminal = new Set(['succeeded', 'failed', 'cancelled']);
+
+    async function pollTask() {
+      const [taskRes, stepsRes] = await Promise.all([
+        fetch(`/api/tasks/${taskId}`),
+        fetch(`/api/tasks/${taskId}/steps`)
+      ]);
+
+      if (!taskRes.ok || !stepsRes.ok) return;
+
+      const [taskData, stepsData] = await Promise.all([
+        taskRes.json(),
+        stepsRes.json()
+      ]);
+
+      if (cancelled) return;
+
+      setTaskStatus(taskData.status);
+      setTaskSteps(stepsData.steps || []);
+      setTaskMessage(taskData.error_message || '');
+
+      if (taskData.status && terminal.has(taskData.status)) {
+        setTaskId(null);
+        setIsGenerating(false);
+        if (currentBookId) {
+          loadVersions(currentBookId, currentChapterIndex);
+        }
+      }
     }
 
-    let timer: number | null = null;
-    let cancelled = false;
-
-    const poll = async () => {
-      if (cancelled) {
-        return;
-      }
-      await loadTaskState(taskId);
-      if (!cancelled && (taskStatus === "running" || taskStatus === "queued" || taskStatus === "retrying")) {
-        timer = window.setTimeout(poll, 1000);
-      }
-    };
-
-    void poll();
+    pollTask();
+    const interval = window.setInterval(pollTask, 1000);
 
     return () => {
       cancelled = true;
-      if (timer != null) {
-        window.clearTimeout(timer);
+      window.clearInterval(interval);
+    };
+  }, [taskId, currentBookId, currentChapterIndex, loadVersions]);
+
+  const handleGenerate = useCallback(async (chapterIndex: number) => {
+    if (!currentBookId) return;
+
+    setIsGenerating(true);
+    setTaskStatus('running');
+    setTaskMessage('准备生成...');
+
+    try {
+      const response = await fetch(
+        `/api/books/${currentBookId}/chapters/${chapterIndex}/generate`,
+        { method: 'POST' }
+      );
+
+      if (!response.ok) {
+        const error = await response.json() as ApiError;
+        setTaskStatus('failed');
+        setTaskMessage(error.message || '生成失败');
+        setIsGenerating(false);
+        return;
+      }
+
+      const result = await response.json() as { task_id: string };
+      setTaskId(result.task_id);
+    } catch (err) {
+      setTaskStatus('failed');
+      setTaskMessage('网络错误或服务器不可用');
+      setIsGenerating(false);
+    }
+  }, [currentBookId]);
+
+  const handleRollback = useCallback(async () => {
+    if (!currentBookId) return;
+
+    try {
+      const response = await fetch(
+        `/api/books/${currentBookId}/chapters/${currentChapterIndex}/rollback`,
+        { method: 'POST' }
+      );
+
+      if (!response.ok) {
+        throw new Error('Rollback failed');
+      }
+
+      setVersionMode('latest');
+      await loadVersions(currentBookId, currentChapterIndex);
+    } catch (err) {
+      console.error('Rollback failed:', err);
+    }
+  }, [currentBookId, currentChapterIndex, loadVersions]);
+
+  const handleUploadClick = useCallback(() => {
+    // Create a hidden file input
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.txt,.md,.markdown,.pdf';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('title', file.name.replace(/\.[^/.]+$/, ''));
+
+      try {
+        const response = await fetch('/api/books/upload', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) throw new Error('Upload failed');
+
+        const result = await response.json() as { book_id: string };
+        // Refresh books list and select the new book
+        const booksResponse = await fetch('/api/books');
+        if (booksResponse.ok) {
+          const data = await booksResponse.json();
+          setBooks(data.books || []);
+          setCurrentBookId(result.book_id);
+        }
+      } catch (err) {
+        console.error('Upload failed:', err);
+        alert('上传失败，请重试');
       }
     };
-  }, [taskId, taskStatus]);
+    input.click();
+  }, []);
+
+  // Map chapters to include status from task steps
+  const chaptersWithStatus = chapters.map(ch => {
+    const step = taskSteps.find(s => s.stage === 'compile');
+    let status: 'pending' | 'running' | 'succeeded' | 'failed' | 'retrying' = 'pending';
+    if (taskStatus === 'running' && currentChapterIndex === ch.index_num) {
+      status = step?.status === 'running' ? 'running' : 'pending';
+    } else if (ch.index_num === currentChapterIndex && taskStatus === 'succeeded') {
+      status = 'succeeded';
+    } else if (ch.index_num === currentChapterIndex && taskStatus === 'failed') {
+      status = 'failed';
+    }
+    return { ...ch, index: ch.index_num, status };
+  });
 
   return (
-    <div className="min-h-screen text-ink">
-      <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-8 px-4 py-8 sm:px-6 lg:px-8">
-        <section className="overflow-hidden rounded-[2rem] border border-white/50 bg-white/65 shadow-panel backdrop-blur">
-          <div className="grid gap-8 p-8 lg:grid-cols-[1.2fr_0.8fr] lg:p-12">
-            <div>
-              <p className="text-xs uppercase tracking-[0.35em] text-ember">Book To Web</p>
-              <h1 className="mt-4 max-w-3xl font-display text-4xl leading-tight text-ink sm:text-5xl">
-                A minimal shell for AI-generated chapters with observable generation states.
-              </h1>
-              <p className="mt-6 max-w-2xl text-base leading-8 text-slate-700">
-                API mode now exposes stage progress, version selection, and rollback so failures are
-                visible and recoverable.
-              </p>
-            </div>
+    <div className="min-h-screen bg-cream">
+      {/* Top Navigation Bar */}
+      <TopBar
+        bookTitle={currentBook?.title}
+        onOpenDrawer={() => setIsDrawerOpen(true)}
+        onOpenPanel={() => setIsSidePanelOpen(true)}
+      />
 
-            <aside className="rounded-[1.5rem] border border-slate-200 bg-mist/80 p-6">
-              <p className="text-xs uppercase tracking-[0.3em] text-pine">Loader controls</p>
-              <div className="mt-6 space-y-4">
-                <label className="block text-sm font-medium text-slate-700">
-                  <span className="mb-2 block">Book ID</span>
-                  <input
-                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none transition focus:border-pine"
-                    onChange={(event) => setBookId(event.target.value)}
-                    placeholder="book-001"
-                    value={bookId}
-                  />
-                </label>
-                <label className="block text-sm font-medium text-slate-700">
-                  <span className="mb-2 block">Chapter Index</span>
-                  <input
-                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none transition focus:border-pine"
-                    min={0}
-                    onChange={(event) => setChapterIndex(Number(event.target.value) || 0)}
-                    type="number"
-                    value={chapterIndex}
-                  />
-                </label>
-                <label className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
-                  <span>Use backend API</span>
-                  <input
-                    checked={useApi}
-                    className="h-4 w-4 accent-pine"
-                    onChange={(event) => setUseApi(event.target.checked)}
-                    type="checkbox"
-                  />
-                </label>
-                <label className="flex items-center justify-between rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-slate-700">
-                  <span>Allow unsafe code execution</span>
-                  <input
-                    checked={allowUnsafeExecution}
-                    className="h-4 w-4 accent-amber-700"
-                    onChange={(event) => setAllowUnsafeExecution(event.target.checked)}
-                    type="checkbox"
-                  />
-                </label>
-                <button
-                  className="w-full rounded-2xl bg-pine px-4 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-400"
-                  disabled={!hasApiTarget || isGenerating}
-                  onClick={() => void handleGenerate()}
-                  type="button"
-                >
-                  {isGenerating ? "Generating..." : "Generate Component"}
-                </button>
-                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
-                  <p className="text-xs uppercase tracking-[0.25em] text-pine">Version Mode</p>
-                  <div className="mt-2 flex items-center gap-4">
-                    <label className="flex items-center gap-2">
-                      <input
-                        checked={versionMode === "latest"}
-                        className="h-4 w-4 accent-pine"
-                        onChange={() => setVersionMode("latest")}
-                        type="radio"
-                      />
-                      latest
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <input
-                        checked={versionMode === "stable"}
-                        className="h-4 w-4 accent-pine"
-                        onChange={() => setVersionMode("stable")}
-                        type="radio"
-                      />
-                      stable
-                    </label>
-                  </div>
-                  <button
-                    className="mt-3 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    disabled={!stableVersion || !latestVersion || latestVersion.version_num === stableVersion.version_num}
-                    onClick={() => void handleRollback()}
-                    type="button"
-                  >
-                    Rollback to stable
-                  </button>
-                </div>
-                {apiError ? (
-                  <p className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                    {apiError}
-                  </p>
-                ) : null}
-              </div>
-            </aside>
-          </div>
-        </section>
+      {/* Left Drawer - Book List */}
+      <Drawer
+        isOpen={isDrawerOpen}
+        onClose={() => setIsDrawerOpen(false)}
+        books={books}
+        currentBookId={currentBookId}
+        onSelectBook={setCurrentBookId}
+        onUploadClick={handleUploadClick}
+      />
 
-        <section className="grid gap-6 lg:grid-cols-[0.72fr_1fr]">
-          <article className="rounded-[2rem] border border-white/50 bg-white/65 p-6 shadow-panel backdrop-blur">
-            <p className="text-xs uppercase tracking-[0.3em] text-ember">Stage Progress</p>
-            <p className="mt-3 text-sm text-slate-600">Task status: {taskStatus}</p>
-            <p className="mt-1 text-sm text-slate-600">{taskMessage}</p>
-            {taskId ? <p className="mt-1 text-xs text-slate-500">task_id: {taskId}</p> : null}
+      {/* Right Side Panel - Chapters/Status/Versions */}
+      <SidePanel
+        isOpen={isSidePanelOpen}
+        onClose={() => setIsSidePanelOpen(false)}
+        chapters={chaptersWithStatus}
+        versions={versions}
+        currentChapterIndex={currentChapterIndex}
+        onSelectChapter={setCurrentChapterIndex}
+        onGenerate={handleGenerate}
+        onRollback={handleRollback}
+        isGenerating={isGenerating}
+      />
 
-            <ul className="mt-5 space-y-2 text-sm leading-6 text-slate-700">
-              {stageOrder.map((stage) => {
-                const step = stepMap.get(stage);
-                const status = step?.status || "pending";
-                return (
-                  <li
-                    className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2"
-                    key={stage}
-                  >
-                    <span className="font-medium">{stage}</span>
-                    <span className="text-xs uppercase tracking-wide text-slate-500">{status}</span>
-                  </li>
-                );
-              })}
-            </ul>
-
-            <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-3">
-              <p className="text-xs uppercase tracking-[0.25em] text-pine">Versions</p>
-              <ul className="mt-2 space-y-1 text-xs text-slate-600">
-                {versions.length === 0 ? <li>No generated versions yet.</li> : null}
-                {versions.map((version) => (
-                  <li className="flex items-center justify-between" key={version.version_num}>
-                    <span>v{version.version_num}</span>
-                    <span>
-                      {version.is_latest ? "latest" : ""}
-                      {version.is_latest && version.is_stable ? " / " : ""}
-                      {version.is_stable ? "stable" : ""}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            {loaderError && versionMode === "latest" && stableVersion ? (
-              <button
-                className="mt-4 rounded-full border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800"
-                onClick={() => setVersionMode("stable")}
-                type="button"
-              >
-                Latest failed at {loaderError.stage || "render"}, switch to stable
-              </button>
-            ) : null}
-          </article>
-
-          <section className="space-y-4">
-            <p className="text-xs uppercase tracking-[0.3em] text-pine">Renderer preview</p>
-            <DynamicComponent
-              allowUnsafeExecution={allowUnsafeExecution}
-              bookId={useApi ? bookId : undefined}
-              chapterIndex={chapterIndex}
-              inlineCode={useApi ? undefined : sampleChapterCode}
-              onErrorChange={setLoaderError}
-              version={versionMode}
-              key={`${bookId}-${chapterIndex}-${versionMode}-${rendererNonce}-${useApi ? "api" : "inline"}`}
-            />
-          </section>
-        </section>
+      {/* Main Content Area */}
+      <main className="pt-16 h-screen">
+        <ContentView
+          bookId={currentBookId}
+          chapter={currentChapter ? {
+            index: currentChapter.index_num,
+            title: currentChapter.title,
+            content: currentChapterContent
+          } : undefined}
+          allowUnsafeExecution={allowUnsafeExecution}
+          onAllowUnsafeChange={setAllowUnsafeExecution}
+          versionMode={versionMode}
+        />
       </main>
     </div>
   );

@@ -42,7 +42,16 @@ async def test_api_smoke_upload_generate_and_fetch_component(tmp_path) -> None:
 
         chapters = await client.get(f"/api/books/{book_id}/chapters")
         assert chapters.status_code == 200
-        assert len(chapters.json()["chapters"]) == 1
+        chapters_payload = chapters.json()["chapters"]
+        assert len(chapters_payload) == 1
+        assert "content_path" not in chapters_payload[0]
+
+        chapter_content = await client.get(f"/api/books/{book_id}/chapters/0/content")
+        assert chapter_content.status_code == 200
+        content_payload = chapter_content.json()
+        assert content_payload["book_id"] == book_id
+        assert content_payload["chapter_index"] == 0
+        assert "Demand meets supply." in content_payload["content"]
 
         generate = await client.post(f"/api/books/{book_id}/chapters/0/generate")
         assert generate.status_code == 200
