@@ -16,6 +16,7 @@
     "echarts-for-react": "^3.0.2",
     "framer-motion": "^12.6.3",
     "katex": "^0.16.22",
+    "lucide-react": "^0.479.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

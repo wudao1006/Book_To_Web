@@ -203,6 +203,14 @@ class BookRepository:
         return dict(row) if row else None
 
     @staticmethod
+    def list_books() -> list[dict[str, Any]]:
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, title, author, status, upload_time FROM books ORDER BY upload_time DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
     def update_status(book_id: str, status: str) -> None:
         with transaction() as conn:
             conn.execute("UPDATE books SET status = ? WHERE id = ?", (status, book_id))

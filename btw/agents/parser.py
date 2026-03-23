@@ -1,3 +1,4 @@
+"""Parser agent for BTW."""
 from __future__ import annotations
 
 import re
@@ -5,18 +6,36 @@ from pathlib import Path
 from typing import Any
 
 from btw.agents.base import Agent
+from btw.skills.pdf_to_markdown import PDFToMarkdownSkill
 from btw.storage.book_store import save_chapter
 from btw.storage.db import BookRepository, ChapterRepository
 
 
 class ParserAgent(Agent):
     name = "parser"
-    description = "Parse uploaded book text into chapters."
+    description = "Parse uploaded book files (PDF, Markdown, TXT) into chapters."
 
     async def process(self, input_data: dict[str, Any]) -> dict[str, Any]:
         file_path = Path(input_data["file_path"])
         book_id = input_data["book_id"]
-        text = file_path.read_text(encoding="utf-8")
+
+        print(f"Parser processing: {file_path}, suffix: {file_path.suffix}")
+
+        # Handle PDF files
+        if file_path.suffix.lower() == ".pdf":
+            print("Detected PDF, converting...")
+            pdf_skill = PDFToMarkdownSkill()
+            result = await pdf_skill.execute(
+                file_path=str(file_path),
+            )
+            print(f"PDF conversion result: {result.get('success')}, error: {result.get('error')}")
+            if not result.get("success"):
+                raise RuntimeError(f"PDF conversion failed: {result.get('error')}")
+            text = result["markdown"]
+        else:
+            # Handle text files (Markdown, TXT)
+            print(f"Reading text file: {file_path}")
+            text = file_path.read_text(encoding="utf-8")
 
         chapters = self._split_chapters(text)
         chapter_rows: list[dict[str, Any]] = []

@@ -42,7 +42,7 @@ class CreatorAgent(Agent):
         token_cost = 0.0
 
         cached = AICacheRepository.get(prompt_hash) if self.enable_cache else None
-        if cached is not None:
+        if cached is not None and str(cached.get("result", "")).strip():
             llm_content = str(cached["result"])
             llm_model = str(cached.get("model") or llm_model)
             cache_hit = True
@@ -61,7 +61,11 @@ class CreatorAgent(Agent):
                 ],
                 **self.llm_config,
             )
+            if result.get("error"):
+                raise RuntimeError(f"llm_call_failed:{result['error']}")
             llm_content = str(result.get("content", ""))
+            if not llm_content.strip():
+                raise RuntimeError("llm_call_failed:empty_response")
             llm_model = str(result.get("model") or llm_model)
             token_cost = float(result.get("token_cost", 0.0) or 0.0)
             if self.enable_cache:

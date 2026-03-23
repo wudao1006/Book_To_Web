@@ -322,6 +322,18 @@ class DirectorAgent(Agent):
                 TaskRepository.upsert_step(task_id, "compile", "queued")
             else:
                 TaskRepository.upsert_step(task_id, "validate", "succeeded")
+                self._log_stage(
+                    task_id=task_id,
+                    trace_id=trace_id,
+                    stage="validate",
+                    agent_name="engineer",
+                    status="succeeded",
+                    latency_ms=engineer_latency,
+                    token_cost=0.0,
+                    book_id=book_id,
+                    chapter_index=chapter_index,
+                    message="validation succeeded",
+                )
                 TaskRepository.upsert_step(
                     task_id,
                     "compile",
@@ -362,6 +374,18 @@ class DirectorAgent(Agent):
 
         TaskRepository.upsert_step(task_id, "validate", "succeeded")
         TaskRepository.upsert_step(task_id, "compile", "succeeded")
+        self._log_stage(
+            task_id=task_id,
+            trace_id=trace_id,
+            stage="validate",
+            agent_name="engineer",
+            status="succeeded",
+            latency_ms=engineer_latency,
+            token_cost=0.0,
+            book_id=book_id,
+            chapter_index=chapter_index,
+            message="validation succeeded",
+        )
 
         self._log_stage(
             task_id=task_id,
